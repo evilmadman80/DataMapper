@@ -11,160 +11,279 @@ using System.Data.Common;
 
 namespace DataMapper
 {
-    public class SqlMapper<T> where T : class
+    public static class SqlMapper
     {
-        private List<Action<T, DbDataReader>> mappers = new List<Action<T, DbDataReader>>();
-
-        public SqlMapper(bool autoMap = false)
+        private static void MapType<T>(T target, object source, PropertyInfo prop)
         {
-            if (!autoMap)
-                return;
-
-            PropertyInfo[] properties = typeof(T).GetProperties();
-            foreach(PropertyInfo property in properties)
+            try
             {
-                string name = property.Name;
-                Map(property, name);
-            }
-        }
-
-        #region setup mappings
-        public SqlMapper<T> Map<TValue>(Expression<Func<T, TValue>> expression, string source = "")
-        {
-            var member = expression.Body as MemberExpression;
-            if (string.IsNullOrWhiteSpace(source))
-            {
-                source = member.Member.Name;
-            }
-
-            PropertyInfo prop = (PropertyInfo)member.Member;
-            return Map(prop, source);
-        }
-
-        public SqlMapper<T> Map(PropertyInfo prop, string source)
-        {
-            MethodInfo setProp = prop.GetSetMethod();
-            Type propType = prop.PropertyType;
-
-            bool isNullable = !propType.IsGenericType || propType.GetGenericTypeDefinition() == typeof(Nullable<>);
-
-            Action<T, DbDataReader> mySetAction = null;
-
-            if (isNullable)//setup nullable check, this will be nullable
-            {
-                if (propType.IsGenericType && propType.GetGenericTypeDefinition() == typeof(Nullable<>))
+                //since convert does not work with nullable types we must check and get the underlying type
+                Type targetType = prop.PropertyType;
+                if (targetType.IsGenericType && targetType.GetGenericTypeDefinition() == typeof(Nullable<>))
                 {
-                    propType = Nullable.GetUnderlyingType(propType);
+                    targetType = Nullable.GetUnderlyingType(targetType);
                 }
-                mySetAction = (target, reader) =>
-                {
-                    var targetVal = reader[source];
-                    if (targetVal == DBNull.Value || targetVal == null)
-                        setProp.Invoke(target, new object[] { null });
-                    else
-                        setProp.Invoke(target, new object[] { Convert.ChangeType(targetVal, propType) });
-                };
-            }
-            else
-            {
-                mySetAction = (target, reader) =>
-                {
-                    var targetVal = reader[source];
-                    if (targetVal == DBNull.Value || targetVal == null)
-                    {
-                        targetVal = Activator.CreateInstance(propType);
-                    }
 
-                    setProp.Invoke(target, new object[] { Convert.ChangeType(targetVal, propType) });
-                };
+                if (targetType == typeof(string))
+                {
+                    prop.SetMethod.Invoke(target, new object[] { source.ToString().Trim() });
+                }
+                else
+                {
+                    prop.SetMethod.Invoke(target, new object[] { Convert.ChangeType(source, targetType) });
+                }
             }
-
-            mappers.Add(mySetAction);
-            return this;
+            catch (Exception) { }
         }
-        #endregion
 
-        #region synchronous
-        public List<T> Map(DbDataReader reader)
+        public static List<T> Map<T>(SqlDataReader source) where T : class
         {
             List<T> mappedList = new List<T>();
-
-            if(reader.HasRows)
+            if (source == null || !source.HasRows)
+                return mappedList;
+            //Dictionary<PropertyInfo, string> propertyMap = new Dictionary<PropertyInfo, string>();
+            //Dictionary<PropertyInfo, Action<T, object>> setMap = new Dictionary<PropertyInfo, Action<T, object>>();
+            using (SqlDataMappingInfo<T> propMap = new SqlDataMappingInfo<T>())
             {
-                while(reader.Read())
+                try
                 {
-                    T mapped = (T)Activator.CreateInstance(typeof(T));
-                    foreach (Action<T, DbDataReader> mapper in mappers)
-                    {
-                        mapper.Invoke(mapped, reader);
-                    }
-                    mappedList.Add(mapped);
-                }
-            }
 
+                    string[] columns = new string[source.FieldCount];
+                    for (int i = 0; i < source.FieldCount; ++i)
+                        columns[i] = source.GetName(i).ToUpper().Trim();
+
+                    IEnumerable<PropertyInfo> properties = typeof(T).GetProperties();
+
+                    if (properties != null && properties.Count() > 0)
+                        properties = properties.Where(pi => pi.CanWrite);
+
+
+                    if (properties == null || properties.Count() == 0)
+                    {
+                        return null;
+                    }
+
+                    foreach (PropertyInfo prop in properties)
+                    {
+                        propMap.Add(prop, columns);
+                    }
+                }
+                catch (Exception) { }
+
+                var constructor = new ConstructorDelegate<T>(() => (T)Activator.CreateInstance(typeof(T)));
+
+                do
+                {
+                    while (source.Read())
+                    {
+                        T map = constructor(); //(T)Activator.CreateInstance(typeof(T));
+
+                        #region set properties
+                        foreach (SqlMappingInfo<T> mapping in propMap.Values) //(PropertyInfo propInfo in properties)
+                        {
+                            if (mapping?.SetValue == null || source.IsDBNull(mapping.ColumnNumber))
+                                continue;
+
+                            mapping.SetValue(map, source.GetValue(mapping.ColumnNumber));
+                        }
+                        #endregion set properties
+
+                        mappedList.Add(map);
+                    }
+                } while (source.NextResult());
+            }
             return mappedList;
         }
 
-        public List<T> Map(SqlDataReader reader) { return Map(reader as DbDataReader); }
-
-        public List<T> Map(DataView view)
+        public static List<T> Map<T>(DataTable source) where T : class
         {
-            return Map(view.ToTable().CreateDataReader() as DbDataReader);
+            List<T> mappedList = new List<T>();
+            using (SqlDataMappingInfo<T> propMap = new SqlDataMappingInfo<T>())
+            {
+                try
+                {
+                    IEnumerable<PropertyInfo> properties = typeof(T).GetProperties();
+
+                    if (properties != null && properties.Count() > 0)
+                        properties = properties.Where(pi => pi.CanWrite);
+
+                    if (properties == null || properties.Count() == 0)
+                    {
+                        return null;
+                    }
+
+                    foreach (PropertyInfo prop in properties)
+                    {
+                        propMap.Add(prop, source.Columns);
+                    }
+                }
+                catch (Exception) { }
+
+                var constructor = new ConstructorDelegate<T>(() => (T)Activator.CreateInstance(typeof(T))); //CreateConstructor<T>();
+
+                foreach (DataRow row in source.Rows)
+                {
+                    T map = constructor();// (T)Activator.CreateInstance(typeof(T));
+
+                    #region set properties
+                    foreach (SqlMappingInfo<T> mapping in propMap.Values) //(PropertyInfo propInfo in properties)
+                    {
+                        if (mapping?.SetValue == null || row.IsNull(mapping.ColumnNumber))
+                            continue;
+
+                        mapping.SetValue(map, row[mapping.ColumnNumber]);
+                    }
+                    #endregion set properties
+
+                    mappedList.Add(map);
+                }
+            }
+            return mappedList;
+        }
+
+        public static List<T> MapSingleSet<T>(SqlDataReader source) where T : class
+        {
+            List<T> mappedList = new List<T>();
+            if (source == null || !source.HasRows)
+                return mappedList;
+            //Dictionary<PropertyInfo, string> propertyMap = new Dictionary<PropertyInfo, string>();
+            //Dictionary<PropertyInfo, Action<T, object>> setMap = new Dictionary<PropertyInfo, Action<T, object>>();
+            using (SqlDataMappingInfo<T> propMap = new SqlDataMappingInfo<T>())
+            {
+                try
+                {
+                    string[] columns = new string[source.FieldCount];
+                    for (int i = 0; i < source.FieldCount; ++i)
+                        columns[i] = source.GetName(i).Trim().ToUpper();
+
+                    IEnumerable<PropertyInfo> properties = typeof(T).GetProperties();
+
+                    if (properties == null || properties.Count() == 0)
+                        return null;
+
+                    foreach (PropertyInfo prop in properties)
+                    {
+                        if (!prop.CanWrite) continue;
+
+                        propMap.Add(prop, columns);
+                    }
+                }
+                catch (Exception) { }
+
+                var constructor = new ConstructorDelegate<T>(() => (T)Activator.CreateInstance(typeof(T)));
+
+                while (source.Read())
+                {
+                    T map = constructor(); //(T)Activator.CreateInstance(typeof(T));
+
+                    #region set properties
+                    foreach (SqlMappingInfo<T> mapping in propMap.Values) //(PropertyInfo propInfo in properties)
+                    {
+                        if (mapping?.SetValue == null || source.IsDBNull(mapping.ColumnNumber))
+                            continue;
+
+                        mapping.SetValue(map, source.GetValue(mapping.ColumnNumber));
+                    }
+                    #endregion set properties
+
+                    mappedList.Add(map);
+                }
+            }
+            return mappedList;
+        }
+
+        public static T MapSingle<T>(DataTable source) where T : class
+        {
+            T returnValue = null;
+
+            if (source == null || source.Rows.Count == 0)
+                return returnValue;
+
+            PropertyInfo[] properties = typeof(T).GetProperties();
+
+            DataRow row = source.Rows[0];
+            returnValue = (T)Activator.CreateInstance(typeof(T));
+
+            #region set properties
+            foreach (PropertyInfo prop in properties.Where(pi => pi.CanWrite))
+            {
+                string sourceColumn = MappingHelpers.GetSourceColumn(prop);
+                if (sourceColumn != MappingHelpers.DO_NOT_MAP)
+                {
+                    int col = source.Columns.IndexOf(sourceColumn);
+                    if (col < 0 || row.IsNull(col))
+                        continue;
+
+                    MapType<T>(returnValue, row[col], prop);
+                }
+
+            }
+            #endregion set properties
+
+            return returnValue;
+        }
+
+        public static T MapSingle<T>(SqlDataReader source) where T : class
+        {
+            T returnValue = null;
+
+            if (source == null || !source.HasRows)
+                return returnValue;
+
+            IEnumerable<PropertyInfo> properties = typeof(T).GetProperties();
+
+            if (properties != null && properties.Count() > 0)
+                properties = properties.Where(pi => pi.CanWrite);
+
+            if (source.Read())
+            {
+                returnValue = (T)Activator.CreateInstance(typeof(T));
+
+                #region set properties
+                foreach (PropertyInfo prop in properties)
+                {
+                    try
+                    {
+                        string sourceColumn = MappingHelpers.GetSourceColumn(prop);
+                        int col = source.GetOrdinal(sourceColumn);
+                        if (col < 0 || source.IsDBNull(col))
+                            continue;
+
+                        MapType<T>(returnValue, source.GetValue(col), prop);
+                    }
+                    catch (Exception) { }
+                }
+                #endregion set properties
+            }
+
+            return returnValue;
+        }
+    }
+    public class SqlMapper<T> : ISqlMapper<T> where T : class, new()
+    {
+        public List<T> Map(DbDataReader reader)
+        {
+            throw new NotImplementedException();
         }
 
         public List<T> Map(DataTable table)
         {
-            return Map(table.CreateDataReader() as DbDataReader);
-            //List<T> mappedList = new List<T>();
-
-            //foreach(DataRow row in table.Rows)
-            //{
-            //    T mapped = (T)Activator.CreateInstance(typeof(T));
-
-            //    foreach(Action<T, DataRow> mapper in mappers)
-            //    {
-            //        mapper.Invoke(mapped, row);
-            //    }
-
-            //    mappedList.Add(mapped);
-            //}
-
-            //return mappedList;
+            throw new NotImplementedException();
         }
-        #endregion
 
-        #region asynchronous
-        public async Task<List<T>> MapAsync(DbDataReader reader)
+        public T MapSingle(DbDataReader reader)
         {
-            List<T> mappedList = new List<T>();
-
-            if (reader.HasRows)
-            {
-                while (await reader.ReadAsync())
-                {
-                    T mapped = (T)Activator.CreateInstance(typeof(T));
-                    foreach (Action<T, DbDataReader> mapper in mappers)
-                    {
-                        mapper.Invoke(mapped, reader);
-                    }
-                    mappedList.Add(mapped);
-                }
-            }
-
-            return mappedList;
+            throw new NotImplementedException();
         }
 
-        public async Task<List<T>> MapAsync(SqlDataReader reader) { return await MapAsync(reader as DbDataReader); }
-
-        public async Task<List<T>> MapAsync(DataView view)
+        public T MapSingle(DataRow row)
         {
-            return await MapAsync(view.ToTable().CreateDataReader() as DbDataReader);
+            throw new NotImplementedException();
         }
 
-        public async Task<List<T>> MapAsync(DataTable table)
+        public SqlMapper()
         {
-            return await MapAsync(table.CreateDataReader() as DbDataReader);
+
         }
-        #endregion
     }
 }

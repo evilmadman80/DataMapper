@@ -40,9 +40,14 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="ObjectMapper.cs" />
+    <Compile Include="Delegates.cs" />
+    <Compile Include="ISqlMapper.cs" />
+    <Compile Include="MappingHelpers.cs" />
+    <Compile Include="MappingAttribute.cs" />
+    <Compile Include="SqlDataMappingInfo.cs" />
     <Compile Include="SqlMapper.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="SqlMappingInfo.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

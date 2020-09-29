@@ -1,0 +1,6 @@
+D:\projects\DataMapper\DataMapper\bin\Debug\DataMapper.dll
+D:\projects\DataMapper\DataMapper\bin\Debug\DataMapper.pdb
+D:\projects\DataMapper\DataMapper\obj\Debug\DataMapper.csprojAssemblyReference.cache
+D:\projects\DataMapper\DataMapper\obj\Debug\DataMapper.csproj.CoreCompileInputs.cache
+D:\projects\DataMapper\DataMapper\obj\Debug\DataMapper.dll
+D:\projects\DataMapper\DataMapper\obj\Debug\DataMapper.pdb
