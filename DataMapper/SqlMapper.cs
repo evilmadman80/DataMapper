@@ -261,29 +261,129 @@ namespace DataMapper
     }
     public class SqlMapper<T> : ISqlMapper<T> where T : class, new()
     {
+        private static SqlDataMappingInfo<T> _mappingData { get; set; }
+
         public List<T> Map(DbDataReader reader)
         {
-            throw new NotImplementedException();
+            List<T> mappedList = null;
+            if (reader != null && reader.HasRows)
+            {
+                mappedList = new List<T>();
+                do
+                {
+                    foreach (var mapInfo in _mappingData.Values)
+                    {
+                        if (mapInfo.SetValue == null)
+                        {
+                            continue;
+                        }
+
+                        try
+                        {
+                            mapInfo.ColumnNumber = reader.GetOrdinal(mapInfo.SourceColumn);
+                        }
+                        catch (Exception) { mapInfo.ColumnNumber = -1; }
+                    }
+                    while (reader.Read())
+                    {
+                        mappedList.Add(MapSingle(reader));
+                    }
+                }
+                while (reader.NextResult());
+            }
+            return mappedList;
         }
 
         public List<T> Map(DataTable table)
         {
-            throw new NotImplementedException();
+            List<T> myList = new List<T>();
+            foreach (T entry in MapYield(table))
+                myList.Add(entry);
+            return myList;
         }
 
         public T MapSingle(DbDataReader reader)
         {
-            throw new NotImplementedException();
+            T mapped = new T();
+
+            foreach (var mapInfo in _mappingData.Values)
+            {
+                if (mapInfo.ColumnNumber == -1 || reader.IsDBNull(mapInfo.ColumnNumber))
+                    continue;
+
+                mapInfo.SetValue(mapped, reader[mapInfo.ColumnNumber]);
+            }
+
+            return mapped;
         }
 
         public T MapSingle(DataRow row)
         {
-            throw new NotImplementedException();
+            T mapped = new T();
+
+            foreach (var map in _mappingData.Values)
+            {
+                if (map.SetValue == null || map.ColumnNumber < 0 || row.IsNull(map.ColumnNumber))
+                    continue;
+
+                map.SetValue(mapped, row[map.ColumnNumber]);
+            }
+
+            return mapped;
+        }
+
+        public IEnumerable<T> MapYield(DataTable table)
+        {
+            if (table == null || table.Rows == null || table.Rows.Count == 0)
+                yield break;
+
+            foreach (var mapInfo in _mappingData.Values)
+            {
+                if (mapInfo.SetValue == null)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    mapInfo.ColumnNumber = table.Columns.IndexOf(mapInfo.SourceColumn);
+                }
+                catch (Exception) { mapInfo.ColumnNumber = -1; }
+            }
+
+            foreach (DataRow row in table.Rows)
+            {
+                yield return MapSingle(row);
+            }
         }
 
         public SqlMapper()
         {
 
+        }
+        static SqlMapper()
+        {
+            _mappingData = new SqlDataMappingInfo<T>();
+
+            IEnumerable<PropertyInfo> properties = typeof(T).GetProperties();
+
+            if (properties != null && properties.Count() > 0)
+                properties = properties.Where(pi => pi.CanWrite);
+
+
+            if (properties == null || properties.Count() == 0)
+            {
+                return;
+            }
+
+            foreach (PropertyInfo prop in properties)
+            {
+                try
+                {
+                    _mappingData.Add(prop);
+                }
+                catch (Exception) { }
+            }
         }
     }
 }
